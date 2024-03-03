@@ -45,8 +45,11 @@ final class InnerAddons{
 		$resourcePackDir = $resourePackManager->getPath();
 		$resourcePacks = $resourePackManager->getResourceStack();
 		foreach($uuidList as $uuid){
+			if($resourePackManager->getPackById($uuid) !== null){
+				$plugin->getLogger()->warning("Resource pack with UUID {$uuid} is already registered");
+				continue;
+			}
 			$pack = new ZippedResourcePack(Path::join($resourcePackDir, "\{$uuid}.zip"));
-			$resourcePacks[] = $pack;
 
 			$plugin->getLogger()->info(
 				"Inner addon registered to server: {$pack->getPackName()}_v{$pack->getPackVersion()} ({$pack->getPackId()})"
