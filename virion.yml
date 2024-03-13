@@ -1,7 +1,7 @@
 ---
 name: inner-addons
 antigen: kim\present\inneraddons
-version: 1.0.1
+version: 2.0.0
 api: 5.0.0
 author: PresentKim
 description: Register resourcepack from plugin resources!
