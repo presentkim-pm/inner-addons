@@ -1,4 +1,5 @@
 <?php
+/** @noinspection IncorrectRandomRangeInspection */
 
 /**
  *
@@ -26,50 +27,95 @@ declare(strict_types=1);
 
 namespace kim\present\inneraddons;
 
-use alvin0319\RemoteResourcePack\Loader as RemoteResourcePackPlugin;
+use Ahc\Json\Comment as CommentedJsonDecoder;
 use pocketmine\plugin\PluginBase;
+use pocketmine\resourcepacks\ResourcePackException;
 use pocketmine\resourcepacks\ZippedResourcePack;
 use pocketmine\Server;
+use pocketmine\utils\AssumptionFailedError;
 use Symfony\Component\Filesystem\Path;
 
+use function file_exists;
+use function file_get_contents;
+use function is_array;
+use function is_dir;
+use function is_file;
+use function json_decode;
+use function json_encode;
+use function str_ends_with;
+use function str_starts_with;
+use function time;
+
 final class InnerAddons{
-	public const CDN_URL = "http://27.102.92.200:3030/"; //TODO: from config
-
-	public static function archiveAddonsAsync(PluginBase $plugin) : void{
-		Server::getInstance()->getAsyncPool()->submitTask(new AddonArchiveAsyncTask($plugin));
-	}
-
-	public static function registerResourcePack(PluginBase $plugin, string ...$uuidList) : void{
-		$server = Server::getInstance();
-		$resourePackManager = $server->getResourcePackManager();
-		$resourcePackDir = $resourePackManager->getPath();
-		$resourcePacks = $resourePackManager->getResourceStack();
-		foreach($uuidList as $uuid){
-			if($resourePackManager->getPackById($uuid) !== null){
-				$plugin->getLogger()->warning("Resource pack with UUID {$uuid} is already registered");
-				continue;
-			}
-			$pack = new ZippedResourcePack(Path::join($resourcePackDir, "\{$uuid}.zip"));
-
-			$plugin->getLogger()->info(
-				"Inner addon registered to server: {$pack->getPackName()}_v{$pack->getPackVersion()} ({$pack->getPackId()})"
+	public static function register(PluginBase $plugin, string $resourcePath = "addons") : void{
+		$addonDir = $plugin->getResourcePath($resourcePath);
+		if(!file_exists($addonDir) || !is_dir($addonDir)){
+			throw new AssumptionFailedError(
+				"Error on {$plugin->getName()}/$resourcePath addon loading: not found '$resourcePath' directory"
 			);
 		}
-		$resourePackManager->setResourceStack($resourcePacks);
-
-		// Register to RemoteResourcePack plugin for CDN supports
-		$cdnPlugin = $server->getPluginManager()->getPlugin("RemoteResourcePack");
-		if($cdnPlugin instanceof RemoteResourcePackPlugin){
-			\Closure::bind( //HACK: Closure bind hack to access inaccessible members
-				closure: static function() use ($cdnPlugin, $uuidList) : void{
-					foreach($uuidList as $uuid){
-						$cdnPlugin->resourcePacks[$uuid] = InnerAddons::CDN_URL . "{" . $uuid . "}";
-					}
-				},
-				newThis: null,
-				newScope: RemoteResourcePackPlugin::class
-			)();
-			$plugin->getLogger()->info("All inner addons registered to RemoteResourcePack plugin");
+		$manifestPath = Path::join($addonDir, "manifest.json");
+		if(!file_exists($manifestPath) || !is_file($manifestPath)){
+			throw new AssumptionFailedError(
+				"Error on {$plugin->getName()}/$resourcePath addon loading: not found 'manifest.json'"
+			);
 		}
+
+		$manifest = json_decode(file_get_contents($manifestPath), true);
+		if(!is_array($manifest) || !isset($manifest["header"]["uuid"])){
+			throw new AssumptionFailedError(
+				"Error on {$plugin->getName()}/$resourcePath addon loading: failed parsing 'manifest.json'"
+			);
+		}
+
+		$uuid = $manifest["header"]["uuid"];
+		$resourePackManager = Server::getInstance()->getResourcePackManager();
+		if($resourePackManager->getPackById($uuid) !== null){
+			$plugin->getLogger()->warning("Resource pack with UUID $uuid is already registered");
+			return;
+		}
+
+		$resourcePackDir = $resourePackManager->getPath();
+		$resourcePacks = $resourePackManager->getResourceStack();
+		$output = Path::join($resourcePackDir, "_inner.$uuid.zip");
+
+		$archive = new \ZipArchive();
+		$archive->open($output, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
+
+		/** @var \SplFileInfo $fileInfo */
+		foreach(new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($addonDir)) as $fileInfo){
+			if(!$fileInfo->isFile()){
+				continue;
+			}
+
+			$realPath = $fileInfo->getPathname();
+			$innerPath = Path::makeRelative($realPath, $addonDir);
+			if(str_starts_with($innerPath, ".")){
+				continue;
+			}
+
+			$contents = file_get_contents($realPath);
+			if($contents === false){
+				throw new ResourcePackException("Failed to open $realPath file");
+			}
+
+			if(str_ends_with($innerPath, ".json")){
+				try{
+					$contents = json_encode((new CommentedJsonDecoder())->decode($contents));
+				}catch(\RuntimeException){
+				}
+			}
+			$archive->addFromString($innerPath, $contents);
+			$archive->setCompressionName($innerPath, \ZipArchive::CM_DEFLATE64);
+			$archive->setMtimeName($innerPath, time());
+		}
+		$archive->close();
+
+		$pack = new ZippedResourcePack($output);
+		$resourcePacks[] = $pack;
+		$plugin->getLogger()->info(
+			"Registered {$pack->getPackName()}_v{$pack->getPackVersion()} addon registered to server: $uuid"
+		);
+		$resourePackManager->setResourceStack($resourcePacks);
 	}
 }
